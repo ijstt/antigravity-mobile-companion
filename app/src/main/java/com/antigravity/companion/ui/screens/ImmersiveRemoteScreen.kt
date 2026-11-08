@@ -332,6 +332,7 @@ fun ImmersiveRemoteScreen(
                         }
 
                         override fun onPermissionRequest(request: PermissionRequest?) {
+                            android.util.Log.i("ImmersiveRemoteScreen", "WebView onPermissionRequest: " + (request?.resources?.joinToString() ?: "none"))
                             request?.grant(request.resources)
                         }
 

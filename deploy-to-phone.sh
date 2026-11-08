@@ -69,6 +69,7 @@ if ! adb -s "$FIRST_DEVICE" shell pm install -r -d /data/local/tmp/app-debug.apk
 fi
 
 adb -s "$FIRST_DEVICE" shell pm grant com.antigravity.companion.debug android.permission.CAMERA 2>/dev/null || true
+adb -s "$FIRST_DEVICE" shell pm grant com.antigravity.companion.debug android.permission.RECORD_AUDIO 2>/dev/null || true
 echo "Launching Antigravity Companion on device..."
 adb -s "$FIRST_DEVICE" shell am start -n com.antigravity.companion.debug/com.antigravity.companion.MainActivity
 echo "=== Deployment Successful ==="
