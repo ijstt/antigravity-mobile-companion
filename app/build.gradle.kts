@@ -94,6 +94,9 @@ dependencies {
     // Chrome Custom Tabs for Google Cloud Remote Control SSO
     implementation("androidx.browser:browser:1.8.0")
 
+    // AndroidX WebKit for Document Start JS injection and advanced WebView features
+    implementation("androidx.webkit:webkit:1.11.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

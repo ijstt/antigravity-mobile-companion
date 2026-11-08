@@ -27,6 +27,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.antigravity.companion.notifications.WebNotificationBridge
 import com.antigravity.companion.service.AntigravityKeepAliveService
 
@@ -104,6 +106,87 @@ fun ImmersiveRemoteScreen(
         )
     }
 
+    val notificationBridgeScript = """
+        (function() {
+            // 1. Web Notification API Polyfill
+            function AGNotification(title, options) {
+                this.title = title;
+                this.options = options || {};
+                var body = (this.options && this.options.body) || '';
+                if (window.AndroidBridge && window.AndroidBridge.postNotification) {
+                    window.AndroidBridge.postNotification(title, body);
+                }
+            }
+            AGNotification.permission = 'granted';
+            AGNotification.requestPermission = function(cb) {
+                if (typeof cb === 'function') cb('granted');
+                return Promise.resolve('granted');
+            };
+            AGNotification.prototype.addEventListener = function() {};
+            AGNotification.prototype.removeEventListener = function() {};
+            AGNotification.prototype.close = function() {};
+
+            window.Notification = AGNotification;
+            try { Object.defineProperty(window, 'Notification', { value: AGNotification, writable: false }); } catch(e) {}
+
+            // 2. Real-time DOM MutationObserver detecting agent state transitions
+            if (!window.__agObserverInstalled) {
+                window.__agObserverInstalled = true;
+                var isAgentWorking = false;
+                var lastNotified = 0;
+
+                function checkWorkingState() {
+                    var hasStopButton = false;
+                    
+                    var stopCandidate = document.querySelector(
+                        'button[aria-label*="stop" i],' +
+                        'button[title*="stop" i],' +
+                        '[data-test-id*="stop" i],' +
+                        '.generating-indicator'
+                    );
+                    if (stopCandidate) {
+                        hasStopButton = true;
+                    } else {
+                        var allButtons = document.querySelectorAll('button');
+                        for (var i = 0; i < allButtons.length; i++) {
+                            var btn = allButtons[i];
+                            if (btn.querySelector('rect') || (btn.getAttribute('aria-label') && btn.getAttribute('aria-label').toLowerCase().indexOf('stop') !== -1)) {
+                                hasStopButton = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (isAgentWorking && !hasStopButton) {
+                        var now = Date.now();
+                        if (now - lastNotified > 2500) {
+                            lastNotified = now;
+                            if (window.AndroidBridge && window.AndroidBridge.onTaskCompleted) {
+                                window.AndroidBridge.onTaskCompleted('Antigravity task completed.');
+                            }
+                        }
+                    }
+                    isAgentWorking = hasStopButton;
+                }
+
+                var observer = new MutationObserver(function() {
+                    checkWorkingState();
+                });
+
+                function startObserving() {
+                    if (document.body) {
+                        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+                        checkWorkingState();
+                    } else {
+                        setTimeout(startObserving, 50);
+                    }
+                }
+                startObserving();
+                setInterval(checkWorkingState, 1000);
+            }
+        })();
+    """.trimIndent()
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -111,6 +194,7 @@ fun ImmersiveRemoteScreen(
     ) {
         AndroidView(
             factory = { ctx ->
+                WebView.setWebContentsDebuggingEnabled(true)
                 WebView(ctx).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -134,7 +218,6 @@ fun ImmersiveRemoteScreen(
                         displayZoomControls = false
                         mediaPlaybackRequiresUserGesture = false
                         cacheMode = WebSettings.LOAD_DEFAULT
-                        // Clean mobile Chrome User Agent allows Google OAuth sign-in without WebView restrictions
                         userAgentString = "Mozilla/5.0 (Linux; Android 12; SM-A525F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
                     }
 
@@ -145,11 +228,19 @@ fun ImmersiveRemoteScreen(
                     // Add JavaScript bridge for native notifications
                     addJavascriptInterface(WebNotificationBridge(ctx), "AndroidBridge")
 
+                    // Inject Notification polyfill before ANY script or HTML executes
+                    if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                        WebViewCompat.addDocumentStartJavaScript(this@apply, notificationBridgeScript, setOf("*"))
+                    }
+
+                    resumeTimers()
+
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
                             isLoading = true
                             canGoBack = view?.canGoBack() == true
+                            view?.evaluateJavascript(notificationBridgeScript, null)
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {
@@ -157,44 +248,7 @@ fun ImmersiveRemoteScreen(
                             isLoading = false
                             canGoBack = view?.canGoBack() == true
                             CookieManager.getInstance().flush()
-
-                            // Inject Notification polyfill and task completion observer
-                            val jsBridge = """
-                                (function() {
-                                    if (!window.Notification) {
-                                        window.Notification = function(title, options) {
-                                            var body = (options && options.body) || '';
-                                            if (window.AndroidBridge && window.AndroidBridge.postNotification) {
-                                                window.AndroidBridge.postNotification(title, body);
-                                            }
-                                        };
-                                        window.Notification.permission = 'granted';
-                                        window.Notification.requestPermission = function(cb) {
-                                            if (cb) cb('granted');
-                                            return Promise.resolve('granted');
-                                        };
-                                    }
-
-                                    if (!window.__agObserverActive) {
-                                        window.__agObserverActive = true;
-                                        var wasGenerating = false;
-                                        setInterval(function() {
-                                            try {
-                                                var stopBtn = document.querySelector('button[aria-label*="Stop" i], button[title*="Stop" i], [data-test-id*="stop" i]');
-                                                var isGenerating = !!stopBtn;
-                                                if (wasGenerating && !isGenerating) {
-                                                    if (window.AndroidBridge && window.AndroidBridge.onTaskCompleted) {
-                                                        window.AndroidBridge.onTaskCompleted('Antigravity task completed.');
-                                                    }
-                                                }
-                                                wasGenerating = isGenerating;
-                                            } catch (e) {}
-                                        }, 1000);
-                                    }
-                                })();
-                            """.trimIndent()
-
-                            view?.evaluateJavascript(jsBridge, null)
+                            view?.evaluateJavascript(notificationBridgeScript, null)
                         }
 
                         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
