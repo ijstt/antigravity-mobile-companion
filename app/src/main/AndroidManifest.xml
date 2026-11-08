@@ -38,6 +38,14 @@
             android:name=".service.AntigravityKeepAliveService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <receiver
+            android:name=".notifications.NotificationTestReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.antigravity.companion.TEST_NOTIFICATION" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
