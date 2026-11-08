@@ -9,6 +9,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -96,6 +97,15 @@ object NotificationHelper {
             val notificationId = (System.currentTimeMillis() % 100000).toInt()
             NotificationManagerCompat.from(context).notify(notificationId, notification)
             Log.i(TAG, "Notification posted with ID: $notificationId")
+
+            // Wake screen briefly so user sees the task completion on lockscreen
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            @Suppress("DEPRECATION")
+            val screenWakeLock = powerManager?.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                "Antigravity::TaskAlertWake"
+            )
+            screenWakeLock?.acquire(3000L)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to post task notification", e)
         }

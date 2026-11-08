@@ -129,45 +129,112 @@ fun ImmersiveRemoteScreen(
             window.Notification = AGNotification;
             try { Object.defineProperty(window, 'Notification', { value: AGNotification, writable: false }); } catch(e) {}
 
-            // 2. Real-time DOM MutationObserver detecting agent state transitions
+            // 2. WebSocket traffic hook for instant background reactivity
+            if (!window.__agWsHooked && window.WebSocket) {
+                window.__agWsHooked = true;
+                var OrigWebSocket = window.WebSocket;
+                window.WebSocket = function(url, protocols) {
+                    var ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+                    try {
+                        ws.addEventListener('message', function() {
+                            if (window.__agCheckWorkingState) {
+                                window.__agCheckWorkingState();
+                            }
+                        });
+                    } catch(e) {}
+                    return ws;
+                };
+                window.WebSocket.prototype = OrigWebSocket.prototype;
+                try {
+                    window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+                    window.WebSocket.OPEN = OrigWebSocket.OPEN;
+                    window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
+                    window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
+                } catch(e) {}
+            }
+
+            // 3. Multi-signal agent state observer
             if (!window.__agObserverInstalled) {
                 window.__agObserverInstalled = true;
                 var isAgentWorking = false;
+                var taskStartTime = 0;
                 var lastNotified = 0;
 
-                function checkWorkingState() {
-                    var hasStopButton = false;
-                    
-                    var stopCandidate = document.querySelector(
-                        'button[aria-label*="stop" i],' +
-                        'button[title*="stop" i],' +
-                        '[data-test-id*="stop" i],' +
-                        '.generating-indicator'
-                    );
-                    if (stopCandidate) {
-                        hasStopButton = true;
-                    } else {
-                        var allButtons = document.querySelectorAll('button');
-                        for (var i = 0; i < allButtons.length; i++) {
-                            var btn = allButtons[i];
-                            if (btn.querySelector('rect') || (btn.getAttribute('aria-label') && btn.getAttribute('aria-label').toLowerCase().indexOf('stop') !== -1)) {
-                                hasStopButton = true;
-                                break;
-                            }
+                function isGeneratingNow() {
+                    var buttons = document.querySelectorAll('button, [role="button"]');
+                    for (var i = 0; i < buttons.length; i++) {
+                        var btn = buttons[i];
+                        var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        var title = (btn.getAttribute('title') || '').toLowerCase();
+                        var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+
+                        if (aria.includes('stop') || aria.includes('останов') || aria.includes('прерв') || aria.includes('стоп') ||
+                            title.includes('stop') || title.includes('останов') || title.includes('прерв') || title.includes('стоп') ||
+                            text === 'stop' || text === 'square' || text.includes('останов') || text.includes('прерв')) {
+                            return true;
                         }
                     }
 
-                    if (isAgentWorking && !hasStopButton) {
+                    var matIcons = document.querySelectorAll('mat-icon');
+                    for (var j = 0; j < matIcons.length; j++) {
+                        var iconText = (matIcons[j].textContent || '').trim().toLowerCase();
+                        if (iconText === 'stop' || iconText === 'pause' || iconText === 'stop_circle') {
+                            return true;
+                        }
+                    }
+
+                    if (document.querySelector('mat-progress-spinner, mat-spinner, .generating-indicator, .streaming, [data-test-id*="stop" i]')) {
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                function checkWorkingState() {
+                    var generating = isGeneratingNow();
+
+                    if (generating) {
+                        if (!isAgentWorking) {
+                            isAgentWorking = true;
+                            taskStartTime = Date.now();
+                        }
+                    } else if (isAgentWorking) {
                         var now = Date.now();
-                        if (now - lastNotified > 2500) {
+                        if (now - taskStartTime > 2500 && now - lastNotified > 3000) {
                             lastNotified = now;
+                            isAgentWorking = false;
                             if (window.AndroidBridge && window.AndroidBridge.onTaskCompleted) {
                                 window.AndroidBridge.onTaskCompleted('Antigravity task completed.');
                             }
+                        } else if (now - taskStartTime > 15000) {
+                            isAgentWorking = false;
                         }
                     }
-                    isAgentWorking = hasStopButton;
                 }
+                window.__agCheckWorkingState = checkWorkingState;
+
+                document.addEventListener('click', function(e) {
+                    var target = e.target;
+                    var btn = target.closest('button, [role="button"]');
+                    if (!btn) return;
+                    var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                    if (aria.includes('send') || aria.includes('отправ') ||
+                        text === 'send' || text === 'arrow_forward' || text === 'arrow_upward' || text.includes('отправ')) {
+                        isAgentWorking = true;
+                        taskStartTime = Date.now();
+                    }
+                }, true);
+
+                document.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        var target = e.target;
+                        if (target && (target.tagName === 'TEXTAREA' || target.getAttribute('contenteditable') === 'true' || target.tagName === 'INPUT')) {
+                            isAgentWorking = true;
+                            taskStartTime = Date.now();
+                        }
+                    }
+                }, true);
 
                 var observer = new MutationObserver(function() {
                     checkWorkingState();
