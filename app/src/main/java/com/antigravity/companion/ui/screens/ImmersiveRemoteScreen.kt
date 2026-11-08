@@ -115,6 +115,8 @@ fun ImmersiveRemoteScreen(
                 var body = (this.options && this.options.body) || '';
                 if (window.AndroidBridge && window.AndroidBridge.postNotification) {
                     window.AndroidBridge.postNotification(title, body);
+                } else {
+                    try { window.top.postMessage({ type: 'AG_POST_NOTIFICATION', title: title, body: body }, '*'); } catch(e) {}
                 }
             }
             AGNotification.permission = 'granted';
@@ -129,7 +131,19 @@ fun ImmersiveRemoteScreen(
             window.Notification = AGNotification;
             try { Object.defineProperty(window, 'Notification', { value: AGNotification, writable: false }); } catch(e) {}
 
-            // 2. WebSocket traffic hook for instant background reactivity
+            // 2. Cross-frame message relay for AndroidBridge
+            if (window.AndroidBridge) {
+                window.addEventListener('message', function(e) {
+                    if (!e.data || typeof e.data !== 'object') return;
+                    if (e.data.type === 'AG_TASK_COMPLETED') {
+                        window.AndroidBridge.onTaskCompleted(e.data.summary || 'Antigravity task completed.');
+                    } else if (e.data.type === 'AG_POST_NOTIFICATION') {
+                        window.AndroidBridge.postNotification(e.data.title || 'Antigravity', e.data.body || '');
+                    }
+                });
+            }
+
+            // 3. WebSocket traffic hook for instant background reactivity
             if (!window.__agWsHooked && window.WebSocket) {
                 window.__agWsHooked = true;
                 var OrigWebSocket = window.WebSocket;
@@ -153,23 +167,38 @@ fun ImmersiveRemoteScreen(
                 } catch(e) {}
             }
 
-            // 3. Multi-signal agent state observer
+            // 4. Multi-signal agent state observer (Only active in chat frames)
             if (!window.__agObserverInstalled) {
                 window.__agObserverInstalled = true;
-                var isAgentWorking = false;
-                var taskStartTime = 0;
-                var lastNotified = 0;
+                var isWorking = false;
+                var turnStartTime = 0;
+                var completionTimer = null;
+                var lastNotifiedTime = 0;
+
+                function notifyTaskCompleted() {
+                    var now = Date.now();
+                    if (now - lastNotifiedTime < 3000) return;
+                    lastNotifiedTime = now;
+                    isWorking = false;
+                    if (window.AndroidBridge && window.AndroidBridge.onTaskCompleted) {
+                        window.AndroidBridge.onTaskCompleted('Antigravity task completed.');
+                    } else {
+                        try {
+                            window.top.postMessage({ type: 'AG_TASK_COMPLETED', summary: 'Antigravity task completed.' }, '*');
+                        } catch(e) {}
+                    }
+                }
 
                 function isGeneratingNow() {
                     var buttons = document.querySelectorAll('button, [role="button"]');
                     for (var i = 0; i < buttons.length; i++) {
                         var btn = buttons[i];
                         var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        var title = (btn.getAttribute('title') || '').toLowerCase();
+                        var tooltip = (btn.getAttribute('data-tooltip-id') || '').toLowerCase();
                         var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
 
-                        if (aria.includes('stop') || aria.includes('останов') || aria.includes('прерв') || aria.includes('стоп') ||
-                            title.includes('stop') || title.includes('останов') || title.includes('прерв') || title.includes('стоп') ||
+                        if (tooltip.includes('cancel') || tooltip.includes('stop') ||
+                            aria.includes('cancel') || aria.includes('stop') || aria.includes('останов') || aria.includes('прерв') || aria.includes('стоп') ||
                             text === 'stop' || text === 'square' || text.includes('останов') || text.includes('прерв')) {
                             return true;
                         }
@@ -183,7 +212,7 @@ fun ImmersiveRemoteScreen(
                         }
                     }
 
-                    if (document.querySelector('mat-progress-spinner, mat-spinner, .generating-indicator, .streaming, [data-test-id*="stop" i]')) {
+                    if (document.querySelector('mat-progress-spinner, mat-spinner, .animate-spin, .generating-indicator, .streaming, [data-test-id*="stop" i]')) {
                         return true;
                     }
 
@@ -191,23 +220,35 @@ fun ImmersiveRemoteScreen(
                 }
 
                 function checkWorkingState() {
+                    // Ignore frames that don't contain any chat input or cancel button
+                    var hasChatElements = !!document.querySelector(
+                        'textarea, [contenteditable="true"], button[aria-label*="Cancel" i], [data-tooltip-id*="cancel" i], [data-tooltip-id*="input-send-button" i]'
+                    );
+                    if (!hasChatElements) return;
+
                     var generating = isGeneratingNow();
 
                     if (generating) {
-                        if (!isAgentWorking) {
-                            isAgentWorking = true;
-                            taskStartTime = Date.now();
+                        if (!isWorking) {
+                            isWorking = true;
+                            turnStartTime = Date.now();
                         }
-                    } else if (isAgentWorking) {
-                        var now = Date.now();
-                        if (now - taskStartTime > 2500 && now - lastNotified > 3000) {
-                            lastNotified = now;
-                            isAgentWorking = false;
-                            if (window.AndroidBridge && window.AndroidBridge.onTaskCompleted) {
-                                window.AndroidBridge.onTaskCompleted('Antigravity task completed.');
+                        if (completionTimer) {
+                            clearTimeout(completionTimer);
+                            completionTimer = null;
+                        }
+                    } else if (isWorking) {
+                        // Stabilize across tool execution pauses (wait 3.5s of continuous idle before notifying)
+                        if (!completionTimer) {
+                            var now = Date.now();
+                            if (now - turnStartTime > 2500) {
+                                completionTimer = setTimeout(function() {
+                                    completionTimer = null;
+                                    if (isWorking && !isGeneratingNow()) {
+                                        notifyTaskCompleted();
+                                    }
+                                }, 3500);
                             }
-                        } else if (now - taskStartTime > 15000) {
-                            isAgentWorking = false;
                         }
                     }
                 }
@@ -218,20 +259,33 @@ fun ImmersiveRemoteScreen(
                     var btn = target.closest('button, [role="button"]');
                     if (!btn) return;
                     var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    var tooltip = (btn.getAttribute('data-tooltip-id') || '').toLowerCase();
                     var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-                    if (aria.includes('send') || aria.includes('отправ') ||
+
+                    // Ignore header feedback buttons
+                    if (aria.includes('feedback') || tooltip.includes('feedback')) return;
+
+                    if (tooltip.includes('input-send-button') || aria.includes('send') || aria.includes('отправ') ||
                         text === 'send' || text === 'arrow_forward' || text === 'arrow_upward' || text.includes('отправ')) {
-                        isAgentWorking = true;
-                        taskStartTime = Date.now();
+                        isWorking = true;
+                        turnStartTime = Date.now();
+                        if (completionTimer) {
+                            clearTimeout(completionTimer);
+                            completionTimer = null;
+                        }
                     }
                 }, true);
 
                 document.addEventListener('keydown', function(e) {
                     if (e.key === 'Enter' && !e.shiftKey) {
                         var target = e.target;
-                        if (target && (target.tagName === 'TEXTAREA' || target.getAttribute('contenteditable') === 'true' || target.tagName === 'INPUT')) {
-                            isAgentWorking = true;
-                            taskStartTime = Date.now();
+                        if (target && (target.tagName === 'TEXTAREA' || target.getAttribute('contenteditable') === 'true')) {
+                            isWorking = true;
+                            turnStartTime = Date.now();
+                            if (completionTimer) {
+                                clearTimeout(completionTimer);
+                                completionTimer = null;
+                            }
                         }
                     }
                 }, true);
