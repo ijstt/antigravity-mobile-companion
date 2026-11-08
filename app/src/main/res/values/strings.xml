@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Antigravity</string>
+    <string name="scan_qr_prompt">Scan QR code from Antigravity terminal or dashboard to pair</string>
+    <string name="connect">Connect</string>
+    <string name="connected">Connected</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="send_prompt_hint">Ask Antigravity or type a command...</string>
+    <string name="camera_permission_required">Camera permission is required to scan pairing QR code.</string>
+</resources>
